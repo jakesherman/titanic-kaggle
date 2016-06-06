@@ -1,5 +1,10 @@
 """
-project.py - run this to re-create my submission
+project.py - run this to re-create my submission. 
+
+    Note: the find_hyperparameters argument to model_and_submit() is set to 
+    False, meaning that the RandomForestClassifier will use a set of 
+    hyperparameters that have already been tuned. Set this argument to True to 
+    use grid search to find the hyperparameters yourself. Takes ~ 40 min.
 """
 
 import fancyimpute
@@ -133,27 +138,34 @@ def create_submission(name, model, train, outcomes, to_predict):
     Train [model] on [train] and predict the probabilties on [test], and
     format the submission according to Kaggle.
     """
-    clf = model.best_estimator_
-    clf.fit(np.array(train), outcomes)
-    probs = clf.predict(np.array(to_predict))
-    results = pd.DataFrame(probs, columns = ['Prediction'])
-    results.to_csv('submissions/' + name, index = False)
+    model.fit(np.array(train), outcomes)
+    probs = model.predict(np.array(to_predict))
+    results = pd.DataFrame(probs, columns = ['Survived'])
+    results['PassengerId'] = list(pd.read_csv('data/test.csv')['PassengerId'])
+    (results[['PassengerId', 'Survived']]
+        .to_csv('submissions/' + name, index = False))
     return None
 
 
-def model_and_submit(train, outcomes, to_predict):
+def model_and_submit(train, outcomes, to_predict, find_hyperparameters):
     """
     Use a random forest classifier to predict which passengers survive the 
     sinking of the Titanic and create a submission.
     """
-    X_train, X_test, y_train, y_test = train_test_split(
-        train, outcomes, test_size = 0.2, random_state = 50)
-    param_grid = {'n_estimators': [10, 50, 100, 300, 500, 800, 1000],
-                  'criterion': ['gini', 'entropy']}
-    rf_model = train_test_model(
-        RandomForestClassifier(), param_grid, X_train, X_test, y_train, y_test)
-    create_submission('rf_submission.csv', rf_model, train, outcomes, 
-        to_predict)
+    if find_hyperparameters:
+        X_train, X_test, y_train, y_test = train_test_split(
+            train, outcomes, test_size = 0.2, random_state = 50)
+        param_grid = {'n_estimators': [10, 50, 100, 300, 500, 800, 1000],
+                      'criterion': ['gini', 'entropy']}
+        rf_model = train_test_model(
+            RandomForestClassifier(), 
+            param_grid, X_train, X_test, y_train, y_test)
+        model = rf_model.best_estimator_
+    else:
+        model = RandomForestClassifier(max_features = None, 
+            min_samples_split = 1, n_estimators = 10, max_depth = 7, 
+            min_samples_leaf = 1, n_jobs = -1)
+    create_submission('rf_submission.csv', model, train, outcomes, to_predict)
     return None
 
 
@@ -161,7 +173,7 @@ def main():
     data = ingest_data()
     data = feature_engineering(data)
     train, outcomes, to_predict = split_data(data)
-    model_and_submit(train, outcomes, to_predict)
+    model_and_submit(train, outcomes, to_predict, find_hyperparameters = False)
 
 
 if __name__ == '__main__':
