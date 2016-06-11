@@ -13,22 +13,23 @@ import pandas as pd
 from sklearn.cross_validation import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.grid_search import GridSearchCV
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+import xgboost as xgb
 
 
 def ingest_data():
-    train = pd.read_csv('data/train.csv')
-    test = pd.read_csv('data/test.csv')
-    return pd.concat([train.assign(Train = 1), 
-        test.assign(Train = 0).assign(Survived = -999)[list(train) + ['Train']]]
-    )
+    train = pd.read_csv('data/train.csv').assign(Train = 1)
+    test = (pd.read_csv('data/test.csv').assign(Train = 0)
+            .assign(Survived = -999)[list(train)])
+    return pd.concat([train, test])
 
 
 extract_lastname = lambda x: x.split(',')[0]
 
 
 def extract_title(x):
-    """
-    Get the person's title from their name. Combine reduntant or less common 
+    """Get the person's title from their name. Combine reduntant or less common 
     titles together.
     """
     title = x.split(',')[1].split('.')[0][1:]
@@ -36,18 +37,27 @@ def extract_title(x):
         title = 'Miss'
     elif title == 'Mme':
         title = 'Mrs'
-    elif title in ['Don', 'Rev', 'Dr', 'Major', 'Lady', 'Sir', 'Col', 'Capt', 
-                   'the Countess', 'Jonkheer', 'Dona']:
+    elif title in ['Rev', 'Dr', 'Major', 'Col', 'Capt', 'Jonkheer', 'Dona']:
         title = 'Esteemed'
+    elif title in ['Don', 'Lady', 'Sir', 'the Countess']:
+        title = 'Royalty'
     return title
 
 
 first_letter = np.vectorize(lambda x: x[:1]) 
 
 
-def create_dummy_nans(data, col_name):
+def ticket_counts(data):
+    """Tickets in cases where 2 or more people shared a single ticket.
     """
-    Create dummies for a column in a DataFrame, and preserve np.nans in their 
+    ticket_to_count = dict(data.Ticket.value_counts())
+    data['TicketCount'] = data['Ticket'].map(ticket_to_count.get)
+    data['Ticket'] = np.where(data['TicketCount'] > 1, data['Ticket'], np.nan)
+    return data.drop(['TicketCount'], axis = 1)
+
+
+def create_dummy_nans(data, col_name):
+    """Create dummies for a column in a DataFrame, and preserve np.nans in their 
     original places instead of in a separate _nan column.
     """
     deck_cols = [col for col in list(data) if col_name in col]
@@ -58,12 +68,11 @@ def create_dummy_nans(data, col_name):
 
 
 def impute(data):
-    """
-    Impute missing values in the Age, Deck, Embarked, and Fare features.
+    """Impute missing values in the Age, Deck, Embarked, and Fare features.
     """
     impute_missing = data.drop(['Survived', 'Train'], axis = 1)
     impute_missing_cols = list(impute_missing)
-    filled_soft = fancyimpute.SoftImpute().complete(np.array(impute_missing))
+    filled_soft = fancyimpute.MICE().complete(np.array(impute_missing))
     results = pd.DataFrame(filled_soft, columns = impute_missing_cols)
     results['Train'] = list(data['Train'])
     results['Survived'] = list(data['Survived'])
@@ -74,9 +83,15 @@ def impute(data):
 def feature_engineering(data):
     return (data
 
-        # Turn the Name feature into LastName, Title features
+        # Create last name, title, family size, and family features
         .assign(LastName = lambda x: x.Name.map(extract_lastname))
         .assign(Title = lambda x: x.Name.map(extract_title))
+        .assign(FamSize = lambda x: x.SibSp + x.Parch + 1)
+        .assign(Family = lambda x: [a + '_' + str(b) for a, b in zip(
+                    list(x.LastName), list(x.FamSize))])
+            
+        # Create ticket counts for passengers sharing tickets
+        .pipe(ticket_counts)
 
         # Turn the Cabin feature into a Deck feature (A-G)
         .assign(Deck = lambda x: np.where(
@@ -86,20 +101,19 @@ def feature_engineering(data):
         # Turn Sex into a dummy variable
         .assign(Sex = lambda x: np.where(x.Sex == 'male', 1, 0))
 
-        # Create dummy variables for the categorical features - not stricly 
-        # necessary for random forests, but useful to have if we want to compare
-        # RF results to other algorithms
+        # Create dummy variables for the categorical features
         .assign(Pclass = lambda x: x.Pclass.astype(str))
-        .pipe(pd.get_dummies, columns = ['Pclass', 'LastName', 'Title'])
+        .pipe(pd.get_dummies, columns = ['Pclass', 'Family', 'Title', 'Ticket'])
         .pipe(pd.get_dummies, columns = ['Deck'], dummy_na = True)
         .pipe(pd.get_dummies, columns = ['Embarked'], dummy_na = True)
         .pipe(create_dummy_nans, 'Deck_')
         .pipe(create_dummy_nans, 'Embarked_')
 
         # Drop columns we don't need
-        .drop(['Name', 'Cabin', 'Ticket', 'PassengerId'], axis = 1)
+        .drop(['Name', 'Cabin', 'PassengerId', 'SibSp', 'Parch', 'LastName'], 
+            axis = 1)
 
-        # Impute NAs
+        # Impute NAs using MICE
         .pipe(impute)
     )
 
